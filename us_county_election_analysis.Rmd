@@ -1,0 +1,582 @@
+---
+title: "Final Project"
+author: "Rohith Anugolu"
+date: "`r format(Sys.Date(), '%A, %B %d, %Y')`"
+output: 
+  rmdformats::readthedown:
+    css: gvsu_readthedown_theme.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading Packages
+
+```{r}
+#Load necessary packages
+library(flextable)
+library(ggthemes)
+library(ggplot2)
+library(stringr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(skimr)
+library(naniar)
+library(plotly)
+library(sf)
+library(leaflet)
+library(usmap)
+library(tigris)
+library(gtrendsR)
+library(scales)
+library(tidymodels)
+```
+
+## Import the data into R
+
+```{r}
+county_presidents <- read.csv("https://raw.githubusercontent.com/dilernia/STA418-518/main/Data/countypres_2000-2020.csv", stringsAsFactors = TRUE)
+
+#Display first 5 rows from the imported dataset
+head(county_presidents, n = 5)
+```
+
+## 1) Data Dictionary
+
+```{r}
+dataDictionary <- tibble(Variable = colnames(county_presidents),
+                         Description = c("Year of election (1976 to 2020)",
+                                         "State Name",
+                                         "State postal code abbreviation",
+                                         "County name",
+                                         "County FIPS code",
+                                         "Name of the public office to which the candidate is seeking election",
+                                         "Candidate Name",
+                                         "Party",
+                                         "Number of votes for candidate",
+                                         "Total votes cast in the election",
+                                         "Version",
+                                         "Mode"),
+                         Type = map_chr(county_presidents, .f = function(x){typeof(x)[1]}),
+                         Class = map_chr(county_presidents, .f = function(x){class(x)[1]}))
+```
+
+```{r}
+dataDictionary |>
+  flextable(cwidth = 2)
+```
+
+## 2) Data Cleaning
+
+### a) Merging Data Sets
+
+**Merging of data sets was handled in Data Visualizations part.**
+
+### b) String Manipulation
+
+```{r}
+#Clean the candidate names
+county_presidents <- county_presidents |>
+  mutate(candidate = str_replace(candidate, "Donald Trump|Donald J Trump", "Donald Trump")) |>
+  mutate(candidate = str_replace(candidate, "Joseph R Biden Jr", "Joe Biden"))
+```
+
+### c) Missingness of data
+
+```{r}
+county_presidents |>
+  skim()
+```
+
+**Only county_fips variable has 57 missing values in this data set**
+
+```{r}
+# Lollipop chart for displaying data missingness
+county_presidents |> gg_miss_var(show_pct = T) +
+  labs(title = "Missingness for County Presidents data") +
+  theme_few()
+```
+
+```{r}
+# Heatmap displaying data missingness
+missing_data <- county_presidents |>
+  select(candidate, year, county_fips, state, office, party) |>
+  gg_miss_fct(fct = candidate) +
+  labs(x = "Candidate Name", 
+       y = "Variable", 
+       title = "Interactive heatmap displaying missingness for each variable based on candidate")
+
+ggplotly(missing_data)
+```
+
+
+## 3) Exploratory Data Analysis
+
+### a) Tables of Summary Statistics
+
+```{r}
+# Load function for printing tables nicely
+source("https://raw.githubusercontent.com/dilernia/STA323/main/Functions/make_flex.R")
+```
+
+```{r}
+# Calculating descriptive statistics for candidatevotes in Michigan state
+candidateVotesMichiganStats <- county_presidents |>
+  dplyr::filter(str_to_upper(state) == "MICHIGAN") |>
+  dplyr::group_by(year) |>
+  dplyr::summarize(
+  Minimum = min(candidatevotes, na.rm = TRUE),
+  Q1 = quantile(candidatevotes, na.rm = TRUE, probs = 0.25),
+  MEDIAN = median(candidatevotes, na.rm = TRUE),
+  Q3 = quantile(candidatevotes, na.rm = TRUE, probs = 0.75),
+  Maximum = max(candidatevotes, na.rm = TRUE),
+  Mean = mean(candidatevotes, na.rm = TRUE),
+  Range = Maximum - Minimum,
+  SD = sd(candidatevotes, na.rm = TRUE),
+  Variance = var(candidatevotes, na.rm = TRUE)
+)
+
+# Printing table of statistics
+candidateVotesMichiganStats |>
+  make_flex(caption = "Quantitative summary statistics for candidate votes per year in Michigan.", ndigits = 2)
+
+```
+
+
+```{r}
+# Calculating descriptive statistics for total votes in the year 2020
+totalVotesIn2020Stats <- county_presidents |>
+  dplyr::filter(year == 2020) |>
+  group_by(candidate) |>
+  dplyr::summarize(
+  Minimum = min(totalvotes, na.rm = TRUE),
+  Q1 = quantile(totalvotes, na.rm = TRUE, probs = 0.25),
+  MEDIAN = median(totalvotes, na.rm = TRUE),
+  Q3 = quantile(totalvotes, na.rm = TRUE, probs = 0.75),
+  Maximum = max(totalvotes, na.rm = TRUE),
+  Mean = mean(totalvotes, na.rm = TRUE),
+  Range = Maximum - Minimum,
+  SD = sd(totalvotes, na.rm = TRUE),
+  Variance = var(totalvotes, na.rm = TRUE)
+)
+
+# Printing table of statistics
+totalVotesIn2020Stats |> 
+  make_flex(caption = "Quantitative summary statistics for total votes per candidate casted in the election in 2020", ndigits = 2)
+
+```
+
+```{r}
+#Frequency table for obtaining candidates participated in each year
+candidate_occurrence <- with(county_presidents, tapply(candidate, year, function(x) unique(x)))
+
+#Convert to dataframe and set column names
+candidates_year <- candidate_occurrence |>
+  as.data.frame() |>
+  setNames(c("Candidates")) 
+
+# Make index as first column in dataframe
+candidates_year <- cbind(Year = rownames(candidates_year), candidates_year) 
+rownames(candidates_year) <- rownames(1:nrow(candidates_year))
+
+data.frame(lapply(candidates_year, as.character), stringsAsFactors=FALSE) |>
+  make_flex(caption = "Presidential candidates for US across years")
+
+```
+
+### b) Data Visualizations
+
+```{r}
+county_presidents |>
+  group_by(candidate, party) |>
+  summarize(total_candidatevotes = sum(candidatevotes, na.rm = TRUE)) |>
+  ggplot(aes(x = forcats::fct_reorder(candidate, total_candidatevotes, .desc = TRUE), y = total_candidatevotes, fill = party)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::label_comma(), expand = expansion(mult = c(0.0, 0.1))) +
+  scale_fill_manual(values = c("DEMOCRAT" = "blue", "GREEN" =  "green", "LIBERTARIAN" = "#FFDF00", "OTHER" = "gray", "REPUBLICAN" = "red")) +
+  labs(x = "Candidate Name",
+       y = "Candidate Votes",
+       title = "Total number of votes polled across years for each \ncandidate in US",
+       fill = "Party") +
+  theme_few() + 
+  theme(title = element_text(face = "bold"),
+        legend.position = "bottom",
+        legend.title = element_blank()) +
+  coord_flip()
+```
+```{r}
+county_presidents |>
+  group_by(year) |>
+  summarize(total_votes = sum(candidatevotes)) |>
+  ggplot(aes(x = year, y = total_votes)) +
+  geom_line(size = 0.5, color = "black") +
+  scale_y_continuous(labels = label_comma()) +
+  labs(title = "Total Number of votes across years in US",
+       x = "Year",
+       y = "Total  Votes") +
+  theme_bw()
+```
+
+
+```{r}
+# Downloading state-level shape files from US Census Bureau
+if(!file.exists("cb_2018_us_state_500k.zip")) {
+download.file(url = "https://www2.census.gov/geo/tiger/GENZ2018/shp/cb_2018_us_state_500k.zip",
+              destfile = "cb_2018_us_state_500k.zip")
+}
+
+# Create directory for geospatial files
+if(!dir.exists("GeoFiles")) {
+dir.create("GeoFiles")
+}
+
+# Unzipping files
+utils::unzip("cb_2018_us_state_500k.zip",
+             exdir = "GeoFiles")
+
+# Loading the shapefiles
+state_shape <- st_read("GeoFiles//cb_2018_us_state_500k.shp",
+                       quiet = TRUE)
+```
+
+```{r}
+# Downloading county-level shape files from US Census Bureau
+if(!file.exists("cb_2018_us_county_500k.zip")) {
+download.file(url = "https://www2.census.gov/geo/tiger/GENZ2018/shp/cb_2018_us_county_500k.zip",
+              destfile = "cb_2018_us_county_500k.zip")
+}
+
+if(!dir.exists("GeoFiles")) {
+  dir.create("GeoFiles/")
+}
+
+# Unzipping files
+utils::unzip("cb_2018_us_county_500k.zip",
+             exdir = "GeoFiles")
+
+# Loading the shapefiles
+county_shape <- st_read("GeoFiles//cb_2018_us_county_500k.shp",
+                        quiet = TRUE)
+```
+
+```{r}
+# Downloading and importing state FIPS codes
+if(!file.exists("state-geocodes-v2020.xlsx")) {
+download.file("https://www2.census.gov/programs-surveys/popest/geographies/2020/state-geocodes-v2020.xlsx",
+              destfile = "state-geocodes-v2020.xlsx", mode = "wb")
+}
+
+state_fips <- readxl::read_excel("state-geocodes-v2020.xlsx", skip = 5) |> 
+  dplyr::transmute(state_fips = `State (FIPS)`,
+                   state = Name)
+```
+
+
+```{r}
+county_presidents <- county_presidents |>
+    dplyr::mutate(party_new = case_when(party == "DEMOCRAT" ~ "democrat",
+                                    party == "REPUBLICAN" ~ "republican",
+                                    TRUE ~ "other"),
+                  prop_vote = candidatevotes / totalvotes,
+                  state_fips = fips(state))
+```
+
+```{r}
+# Merging elections data with shape file data
+state_shape_full <- state_shape |> 
+  dplyr::left_join(county_presidents |> 
+    dplyr::mutate(GEOID = str_pad(state_fips, width = 2, side = "left", pad = "0")) |> 
+    group_by(year, state, party_new) |> 
+    slice_max(order_by = prop_vote, n = 1) |> 
+    ungroup() |>
+    pivot_wider(
+        id_cols = c(year:office, GEOID),
+        names_from = party_new,
+        values_from = c(candidate, prop_vote),
+        names_sep = "_",
+        names_glue = "{party_new}_{.value}") |> 
+      rowwise() |>
+    mutate(across(c(democrat_candidate, other_candidate, republican_candidate),
+                  ~ str_to_title(str_c(rev(str_split(., ", ")[[1]]), collapse = " ")))),
+    by = c("GEOID" = "GEOID"))
+```
+
+```{r}
+percent_democratic <- state_shape_full |> 
+  dplyr::filter(year == 2012,
+                !is.na(democrat_prop_vote)) |> 
+  tigris::shift_geometry(geoid_column = "GEOID")
+
+# Adding labels column for interactivity
+percent_democratic <- percent_democratic |> 
+dplyr::mutate(Result = paste0("<b>", stringr::str_to_title(state), "<b><br>",
+  democrat_candidate, ": ", round(democrat_prop_vote, 4)*100, "% <br>",
+  republican_candidate, ": ", round(republican_prop_vote, 4)*100, "% <br>",
+  other_candidate, ": ", round(other_prop_vote, 4)*100, "%") |> 
+  lapply(htmltools::HTML))
+
+# Plot it
+electionGG <- percent_democratic |> 
+  ggplot(aes(fill = democrat_prop_vote,
+             text = Result)) +
+  geom_sf() +
+ scale_fill_gradient2(low = "#DC3220",
+                        mid = "#ffffff",
+                        high = "#005AB5",
+                        midpoint = 0.50) + 
+  labs(title = "United States 2012 Presidential Election - Democrats", 
+       fill = "Percent Democrat") +
+  theme_void()
+
+ggplotly(electionGG, tooltip = c("text"))
+```
+
+
+```{r}
+county_presidents_michigan <- county_presidents |>
+  dplyr::mutate(GEOID = str_pad(county_fips, width = 5, side = "left", pad = "0"),
+                Result = paste0("<b>", stringr::str_to_title(county_name), "<b><br>", round(prop_vote, 4) * 100, "% <br>")) |>
+  dplyr::filter(str_to_upper(state) == "MICHIGAN")
+
+# Merge shape and census data
+ggMapData <- county_shape |> 
+  full_join(county_presidents_michigan, by = c("GEOID" = "GEOID")) |> 
+  dplyr::filter(year == 2020)
+
+# Fixing issue with Alaska and Hawaii
+ggMapDataFix <- ggMapData |> 
+  tigris::shift_geometry()
+
+# Plotting by thresholding max poverty level
+michiganGG <- ggMapDataFix |> rowwise() |> 
+  mutate(min_prop_vote = min(prop_vote, 1)) |> 
+  ggplot(aes(fill = min_prop_vote, text = Result)) +
+  geom_sf(color = "#C0C0C0", size = 0.1) +
+  scale_fill_gradient(low = "white", high = "dodgerblue", limits = c(0, 1)) +
+  labs(title = "County-level voting rates in Michigan, 2020", fill = "Voting rate") +
+  theme_void()
+
+plotly::ggplotly(michiganGG)
+```
+ 
+```{r}
+county_presidents |>
+  group_by(year, party) |>
+  summarize(total_votes = sum(totalvotes, na.rm = TRUE)) |>
+  ggplot(aes(x = year, y = total_votes, color = party)) +
+  geom_point() +
+  facet_grid(. ~ party) +
+  geom_smooth(se = FALSE) +
+  scale_fill_manual(values = c("DEMOCRAT" = "blue", "GREEN" =  "green", "LIBERTARIAN" = "#FFDF00", "OTHER" = "gray", "REPUBLICAN" = "red")) +
+  scale_y_continuous(labels = label_comma()) +
+  labs(x = "Year",
+       y = "Total Votes",
+       color = "Party",
+       title = "Total votes polled for each party across years in the state of Michigan")  +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 40), legend.position = "none")
+```
+
+
+```{r}
+search <- gtrends(c("obama", "trump", "biden"), time= "2004-01-01 2020-12-31", geo = "US")
+```
+
+```{r}
+time_trend <- search$interest_over_time |>
+  dplyr::mutate(hits=ifelse(hits=="<1",0.5,as.numeric(hits)),
+                date=as.Date(date))
+
+time_trend |>
+  ggplot(aes(x = date, y = hits, color = keyword)) +
+  geom_line() +
+  labs(title = "Search trends for president names in US during 2004 to 2020",
+       x = "Year",
+       y = "Seach Hits",
+       color = "Keyword") +
+  theme_bw()
+```
+
+ 
+ 
+## 4) Monte Carlo Methods of Inference
+
+```{r}
+# Obtain a sample of data
+trialCountyData <- county_presidents |>
+  dplyr::filter(party %in% c("REPUBLICAN", "DEMOCRAT") & state == "MICHIGAN") |>
+  select(party, candidatevotes) |>
+  arrange(party) |>
+  droplevels()
+
+head(trialCountyData)
+```
+
+
+```{r}
+# Implement welch's two-sample t-test
+tResult <- trialCountyData |>
+  t_test(candidatevotes ~ party, order = c("DEMOCRAT", "REPUBLICAN"), alternative = "greater")
+
+tResult |>
+  flextable()
+```
+
+#### Statement of hypotheses
+
+$$H_0 :\mu_{\text{Democrat}} \le \mu_{Republican}$$
+$$H_a :\mu_{\text{Democrat}} > \mu_{Republican}$$
+
+where $\mu_{\text{Democrat}}$ is the average number of candidate votes polled for Democrats and, $\mu_{Republican}$ is the average number of candidate votes polled for Republicans.
+
+#### Implementing the permutation test
+
+```{r}
+# Number of permutations to do
+nperms <- 500
+
+set.seed(1994)
+
+# Instantiating vector for test statistics
+permTs <- vector(length = nperms)
+
+# Calculating t-test statistic for each permutation
+for(p in 1:nperms) {
+  permTs[p] <- trialCountyData |> 
+    mutate(party = sample(party, replace = FALSE)) |> 
+    t_test(response = candidatevotes, 
+         explanatory = party,
+         order = c("DEMOCRAT", "REPUBLICAN"),
+         alternative = "greater") |> 
+    pull(statistic)
+}
+```
+
+Creating a histogram displaying the null distribution obtained for the randomization test
+
+```{r}
+tibble(value = permTs) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(color = "white") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(x = "Test statistic",
+       y = "Frequency",
+       title = "Randomization test null distribution")
+```
+
+Adding vertical lines to the plot to indicate where the 5th percentile is (a red dotted line), and where our observed test statistic is (solid blue line).
+
+```{r}
+fifthPercentile <- quantile(permTs, probs = 0.05)
+
+tibble(value = permTs) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(color = "white") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  geom_vline(xintercept = quantile(permTs, probs = 0.95), color = "red", lty = "dotted", linewidth = 0.75) + 
+  geom_vline(xintercept = quantile(tResult$statistic, probs = 0.95), color = "blue", lty = "solid", linewidth = 0.5) + 
+  labs(x = "Test statistic",
+       y = "Frequency",
+       title = "Randomization test null distribution")
+```
+
+Calculating the p-value for the randomization test. 
+
+```{r}
+# calculating p-value for the randomization test
+mean(permTs >= tResult$statistic)
+
+janitor::tabyl(permTs >= tResult$statistic)
+```
+
+**Since p-value is > 0.05, we fail to reject null hypotheses**
+
+**Interepretation in context**: There is statistically significant evidence that the average candidates votes polled for democrats was less than or equal to on average than for republicans group at the 5% significance level.
+
+## 5) Bootstrap Methods of Inference
+
+Create a subset of the data that has observations for only Repulican candidates
+
+```{r}
+sampleData <- county_presidents |>
+  dplyr::filter(party == "REPUBLICAN") |>
+  select(party, prop_vote)
+```
+
+Sample size for this dataset
+
+```{r}
+nrow(sampleData)
+```
+
+Sample Median for this dataset
+
+```{r}
+median(sampleData$prop_vote, na.rm = TRUE)
+```
+
+Next, we resample from our original sample dataset 10000 times to obtain $B$
+
+```{r}
+# Number of bootstrap samples
+B <- 10000
+
+# Instantiating matrix for bootstrap samples
+boots <- matrix(NA, nrow = nrow(sampleData), ncol = B)
+
+# Sampling with replacement B times
+for(b in 1:B) {
+boots[, b] <- sampleData |> 
+  slice_sample(prop = 1, replace = TRUE) |> 
+  dplyr::pull(prop_vote)
+}
+```
+
+
+```{r}
+# Instantiating vector for bootstrap medians
+boot_medians <- vector(length = B)
+
+# Calculating medians for bootstrap samples
+for(b in 1:B) {
+  boot_medians[b] <- median(boots[, b], na.rm = TRUE)
+}
+```
+
+Obtain a parametric bootstrap estimate of the standard error of the sample median
+
+```{r}
+# calculating confidence interval bounds
+quantile(boot_medians, probs = c(0.025, 0.975), na.rm = TRUE)
+```
+
+```{r}
+tibble(value = boot_medians) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(color = "black") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  geom_vline(xintercept= quantile(boot_medians, probs = 0.025, na.rm = TRUE), size=1, color="blue",linetype="dotted") +
+  geom_vline(xintercept= quantile(boot_medians, probs = 0.975, na.rm = TRUE),size=1, color="blue",linetype="dotted")+
+  labs(x = "Sample Median",
+       y = "Count",
+       title = "Non-parametric bootstrap distribution of sample medians")
+```
+
+**Confidence interval interpretation**:
+
+We're 95% confident that 50% of republican candidates in US elections during 2000-2020 will have a proportion of votes between 58% and 58.6% or more.
+
+## 6) Conclusion
+
+*In this project, we first imported the Presidential elections data at county level in USA from 2000 to 2020. Then we check the data missingness using interactive heatmap and lollipop chart, clean the candidate names using string functions. Next, we printed summary statistics and frequency tables for the variables in the dataset. Then we created data visualizations for identifying valuable insights into voting trends, party-wise voting patterns. Also we identified search interests of specific keywords during the election years. Next, we implemented Monte Carlo methods of inference to check if average candidate votes polled for democrats is greater than that of republicans in Michigan. Lastly, we implemented non-parametric bootstrap method on republican party voting proportions.*
+
+
+This file was published in Rpubs and it can be found using following link:
+
+[https://rpubs.com/anugolur/1176499](https://rpubs.com/anugolur/1176499)
+
+
+
+
